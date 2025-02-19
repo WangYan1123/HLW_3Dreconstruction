@@ -56,9 +56,7 @@ endif ()
 add_compile_definitions(NOMINMAX) # 重要，open3d 源码中的min max 报错
 
 include_directories(
-    cole  
     registration
-    segmentation
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
 )
@@ -67,8 +65,6 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
 set(LIBRARY_OUTPUT_PATH ${PROJECT_BINARY_DIR}/lib)
 
 add_subdirectory(registration)  
-add_subdirectory(segmentation)
-add_subdirectory(cole)
 
 add_definitions(-DROOT_PATH="${PROJECT_SOURCE_DIR}")
 
@@ -78,9 +74,7 @@ file(GLOB SOURCES "construction.cpp" "construction.h")
 add_executable(3Dconstruction ${SOURCES})
 target_link_libraries(3Dconstruction
      PRIVATE
-     cole  
      registration
-     segmentation
      Qt5::Core
      Qt5::Widgets
      ${OpenCV_LIBS}

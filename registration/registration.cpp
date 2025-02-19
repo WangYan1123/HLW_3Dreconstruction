@@ -1,196 +1,87 @@
-#include "registration.h"
-#include "construction.h"
+#include <registration.h>
 
-pcl::PointCloud<pcl::PointXYZ>::Ptr open3dToPcl(const PointCloudTPtr& o3dCloud) {
-    pcl::PointCloud<pcl::PointXYZ>::Ptr pclCloud(new pcl::PointCloud<pcl::PointXYZ>);
-    pclCloud->points.resize(o3dCloud->points_.size());
-    for (size_t i = 0; i < o3dCloud->points_.size(); ++i) {
-        pclCloud->points[i].x = o3dCloud->points_[i](0);
-        pclCloud->points[i].y = o3dCloud->points_[i](1);
-        pclCloud->points[i].z = o3dCloud->points_[i](2);
+int main() {
+
+    std::string path_source = "D://wy-project//3Dconstruction//data//Models for Test 20241128 HLW(1)//TestModel2_ThreeComponents.pcd";
+    std::string path_target = "D://wy-project//3Dconstruction//data//outside_point//outside_TestModel2.pcd";
+    std::string source_part1 = "D://wy-project//3Dconstruction//data//Models for Test 20241128 HLW(1)//TestModel2_ThreeComponents_part1.pcd";
+    std::string source_part2 = "D://wy-project//3Dconstruction//data//Models for Test 20241128 HLW(1)//TestModel2_ThreeComponents_part2.pcd";
+    std::string source_part3 = "D://wy-project//3Dconstruction//data//Models for Test 20241128 HLW(1)//TestModel2_ThreeComponents_part3.pcd";
+
+    //  -----------------------------加载场景点云 -----------------------------
+    std::cout << ">>>>>>>>>>    load source  " << std::endl;
+    auto source = std::make_shared<open3d::geometry::PointCloud>();
+    if (!open3d::io::ReadPointCloud(path_source, *source)) {
+        std::cerr << "Failed to load source point cloud: " << path_source << std::endl;
+        return -1;
     }
-    return pclCloud;
-}
+    double oriSourceR = ComputeResolution(source);
+    std::cout << "oriSceneR: " << oriSourceR << std::endl;
 
-PointCloudTPtr pclToOpen3d(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
-    PointCloudTPtr open3dCloud(new PointCloudT);
-    open3dCloud->points_.resize(cloud->points.size());
-    for (size_t i = 0; i < cloud->points.size(); ++i) {
-        open3dCloud->points_[i](0) = cloud->points[i].x;
-        open3dCloud->points_[i](1) = cloud->points[i].y;
-        open3dCloud->points_[i](2) = cloud->points[i].z;
+    // ----------------------------- 加载模型点云 -------------------------------------
+    std::cout << std::endl << ">>>>>>>>>>    load model  " << std::endl;
+    auto target = std::make_shared<open3d::geometry::PointCloud>();
+    if (!open3d::io::ReadPointCloud(path_target, *target)) {
+        std::cerr << "Failed to load model point cloud: " << path_target << std::endl;
+        return -1;
     }
-    return open3dCloud;
-}
+    double oriModelR = ComputeResolution(target);
+    std::cout << "oriModelR: " << oriModelR << std::endl;
 
-
-float regO3d::computeCloudR(const PointCloudTPtr& cloud) {
-    if (cloud->points_.empty()) {
-        return 0.0f; 
+    // ----------------------------- 加载部件点云 -------------------------------------
+    auto part1 = std::make_shared<open3d::geometry::PointCloud>();
+    if (!open3d::io::ReadPointCloud(source_part1, *part1)) {
+        std::cerr << "Failed to load model point cloud: " << path_target << std::endl;
+        return -1;
     }
-
-    open3d::geometry::KDTreeFlann kdtree;
-    kdtree.SetGeometry(*cloud);
-    std::vector<float> nearest_distances;
-
-    for (size_t i = 0; i < cloud->points_.size(); ++i) {
-        std::vector<int> indices(2);  
-        std::vector<double> distances(2);
-        int k = kdtree.SearchKNN(cloud->points_[i], 2, indices, distances);
-        if (k > 1) {
-            nearest_distances.push_back(std::sqrt(distances[1]));
-        }
+   
+    auto part2 = std::make_shared<open3d::geometry::PointCloud>();
+    if (!open3d::io::ReadPointCloud(source_part2, *part2)) {
+        std::cerr << "Failed to load model point cloud: " << path_target << std::endl;
+        return -1;
     }
 
-    if (!nearest_distances.empty()) {
-        std::sort(nearest_distances.begin(), nearest_distances.end());
-        size_t mid = nearest_distances.size() / 2;
-        return nearest_distances[mid]; // 返回中位数距离
+    auto part3 = std::make_shared<open3d::geometry::PointCloud>();
+    if (!open3d::io::ReadPointCloud(source_part3, *part3)) {
+        std::cerr << "Failed to load model point cloud: " << path_target << std::endl;
+        return -1;
     }
-    return 0.0f; // 如果未计算到任何距离，返回 0
-}
+  
+    // -----------------------------旋转点云--------------------------------------
+    Eigen::Matrix4d transInit = Eigen::Matrix4d::Identity();
+    double theta = M_PI / 2;
+    transInit(0, 0) = cos(theta);
+    transInit(0, 2) = sin(theta);
+    transInit(2, 0) = -sin(theta);
+    transInit(2, 2) = cos(theta);
+    target->Transform(transInit);
 
+    //----------------------------- 统一分辨率-----------------------------
+    double target_res = std::max(oriSourceR, oriModelR) * 10;
+    auto source_down = source->VoxelDownSample(target_res);
+    double oriSourceR_down = ComputeResolution(source_down);
+    std::cout << "downsamSourceR: " << oriSourceR_down << std::endl;
+    std::cout << "cloud_scene_downsample size: " << source_down->points_.size() << std::endl;
 
-std::tuple<PointCloudTPtr, PointCloudTPtr, FeatureTPtr, FeatureTPtr>
-regO3d::preprocessPointCloud(PointCloudTPtr oriCloud, PointCloudTPtr tarCloud,double& leaf) {
-    visualization::DrawGeometries({oriCloud, tarCloud}, "input");
-    utility::Timer time;
+    auto target_down = target->VoxelDownSample(target_res);
+    double oriModelR_down = ComputeResolution(target_down);
+    std::cout << "downsamModelR: " << oriModelR_down << std::endl;
+    std::cout << "target_downsample size: " << target_down->points_.size() << std::endl;
 
-    std::cout << ">>> down sample ...." << std::endl;
-    time.Start();
-    auto oriCloudDown = oriCloud->VoxelDownSample(leaf);
-    auto tarCloudDown = tarCloud->VoxelDownSample(leaf);
-    time.Stop();
-    std::cout << "oriCloud from " << oriCloud->points_.size() << " to " << oriCloudDown->points_.size() << std::endl;
-    std::cout << "tarCloud from " << tarCloud->points_.size() << " to " << tarCloudDown->points_.size() << std::endl;
-    std::cout << "down sample takes:" << time.GetDurationInMillisecond() << "ms" << std::endl;
+    Eigen::Matrix4d trans = ComputeFGRRegistration(target_down, source_down, target_res);
 
-    float resolution=regO3d::computeCloudR(oriCloudDown);
+    // ------------------------------结果可视化-----------------------------------
+    VisualizeRegistration(*target, *source, trans);
 
-    auto oriResult = oriCloudDown->RemoveRadiusOutliers(10, resolution * 2, false);
-    auto oriRadius = std::get<0>(oriResult);
-    auto tarResult = tarCloudDown->RemoveRadiusOutliers(10, resolution * 2, false);
-    auto tarRadius = std::get<0>(tarResult);
+    auto target_trans = std::make_shared<open3d::geometry::PointCloud>(*target);
+    target_trans->Transform(trans);
+    auto extractPart1 = Ransac_corr(part1, target_trans);
+    auto extractPart2 = Ransac_corr(part2, target_trans);
+    auto extractPart3 = Ransac_corr(part3, target_trans);
 
-    std::cout << ">>> Estimating normals ...." << std::endl;
-    time.Start();
-    oriCloudDown->EstimateNormals(
-        open3d::geometry::KDTreeSearchParamHybrid(resolution * 2, 30));
-    tarCloudDown->EstimateNormals(
-        open3d::geometry::KDTreeSearchParamHybrid(resolution * 2, 30));
-    time.Stop();
-    std::cout << "Estimating normals takes:" << time.GetDurationInMillisecond() << "ms" << std::endl;
+    visualization::DrawGeometries({ extractPart1 }, "extractPart1");
+    visualization::DrawGeometries({ extractPart2 }, "extractPart2");
+    visualization::DrawGeometries({ extractPart3 }, "extractPart3");
 
-    std::cout << ">>> Estimating features ...." << std::endl;
-    time.Start();
-    auto oriCloud_fpfh = pipelines::registration::ComputeFPFHFeature(
-        *oriCloudDown, open3d::geometry::KDTreeSearchParamHybrid(resolution * 5, 100));
-    auto tarCloud_fpfh = pipelines::registration::ComputeFPFHFeature(
-        *tarCloudDown, open3d::geometry::KDTreeSearchParamHybrid(resolution * 5, 100));
-    time.Stop();
-    std::cout << "Estimating features takes:" << time.GetDurationInMillisecond() << "ms" << std::endl;
-    return std::make_tuple(oriCloudDown, tarCloudDown, oriCloud_fpfh, tarCloud_fpfh);
-}
-
-
-void VisualizeRegistration(const open3d::geometry::PointCloud& source,
-    const open3d::geometry::PointCloud& target,
-    const Eigen::Matrix4d& Transformation) {
-    std::shared_ptr<geometry::PointCloud> source_transformed_ptr(
-        new geometry::PointCloud);
-    std::shared_ptr<geometry::PointCloud> target_ptr(new geometry::PointCloud);
-    *source_transformed_ptr = source;
-    *target_ptr = target;
-    source_transformed_ptr->Transform(Transformation);
-    target_ptr->PaintUniformColor({ 1, 0, 0 });
-    source_transformed_ptr->PaintUniformColor({ 0, 1, 0 });
-    visualization::DrawGeometries({ source_transformed_ptr, target_ptr },
-        "Registration result");
-}
-
-regResult executeFastGlobalRegistration(PointCloudTPtr imageCloudDown, PointCloudTPtr spaceCloudDown,
-    FeatureTPtr imageCloud_fpfh, FeatureTPtr spaceCloud_fpfh,
-    double& leaf) {
-    double distanceThreshold = leaf * 8;
-
-    regResult registration_result;
-    utility::Timer time;
-    std::cout << ">>> global registration ...." << std::endl;
-    auto option = pipelines::registration::FastGlobalRegistrationOption();
-    option.maximum_correspondence_distance_ = distanceThreshold;
-    // std::cout<<imageCloudDown->points_.size()<<std::endl;
-    time.Start();
-    registration_result = pipelines::registration::FastGlobalRegistrationBasedOnFeatureMatching(
-        *imageCloudDown, *spaceCloudDown, *imageCloud_fpfh, *spaceCloud_fpfh, option);
-    time.Stop();
-    std::cout << "global registration takes:" << time.GetDurationInMillisecond() << "ms" << std::endl;
-    // 这里的fitness是inlier ratio (# of inlier correspondences / # of all correspondences)，
-    // 反应的是特征描述的能力，真实匹配占总匹配的数量；并非评价配准
-    std::cout << "fitness:" << registration_result.fitness_ << " RMSE:" << registration_result.inlier_rmse_
-        << " correspondence_set size:" << registration_result.correspondence_set_.size() << std::endl;
-     std::cout << registration_result.transformation_<< std::endl;
-    VisualizeRegistration(*imageCloudDown, *spaceCloudDown,
-                          registration_result.transformation_);
-    return registration_result;
-}
-
-regResult regO3d::optimizeUsingICP(PointCloudTPtr imageCloud, PointCloudTPtr spaceCloud,
-    const Eigen::Matrix4d& transInit, double& leaf) {
-
-    utility::Timer time;
-    std::cout << ">>> icp optimize ...." << std::endl;
-    double distance = leaf * 3;
-    time.Start();
-    regResult registration_result = pipelines::registration::RegistrationICP(*imageCloud, *spaceCloud, distance, transInit,
-        pipelines::registration::TransformationEstimationPointToPoint(false),
-        pipelines::registration::ICPConvergenceCriteria(1e-6, 1e-6, 10));
-    time.Stop();
-    std::cout << "icp optimize takes:" << time.GetDurationInMillisecond() << "ms" << std::endl;
-    std::cout << "fitness:" << registration_result.fitness_ << " RMSE:" << registration_result.inlier_rmse_
-        << " correspondence_set size:" << registration_result.correspondence_set_.size() << std::endl;
-    VisualizeRegistration(*imageCloud, *spaceCloud,
-        registration_result.transformation_);
-    return registration_result;
-}
-
-int regO3d::globalRegistrationWithICP(PointCloudTPtr oriCloud, PointCloudTPtr tarCloud) {
-    PointCloudTPtr oriCloudDown, tarCloudDown;
-    FeatureTPtr oriCloud_fpfh, tarCloud_fpfh; 
-
-    double leaf = 2.5;
-    std::tie(oriCloudDown, tarCloudDown, oriCloud_fpfh, tarCloud_fpfh)= regO3d::preprocessPointCloud(oriCloud, tarCloud,leaf);
-
-    double resolution = regO3d::computeCloudR(oriCloudDown);
-    std::cout << "resolution:" << resolution << std::endl;
-    regResult resInit = executeFastGlobalRegistration(oriCloudDown, tarCloudDown, oriCloud_fpfh, tarCloud_fpfh, resolution);
-    regResult resFinal = optimizeUsingICP(oriCloud, tarCloud, resInit.transformation_, resolution);
-    std::cout << ">>> trans matrix from CT to world: " << std::endl;
-    std::cout << resFinal.transformation_<< std::endl;
     return 0;
 }
-
-
-//int main()
-//{
-//    //PointCloudTPtr oriCloud(new PointCloudT), tarCloud(new PointCloudT);
-//    //io::ReadPointCloud(std::string(REG_DATA_PATH) + "frontCloud.pcd", *oriCloud);
-//    //io::ReadPointCloud(std::string(REG_DATA_PATH) + "sideCloud1.pcd", *tarCloud);
-//    // 指定文件路径
-//    std::string Path = "D://wy-project//3Dconstruction//data//deskCloud.pcd";
-//    std::string modelPath = "D://wy-project//3Dconstruction//data//model.pcd";
-//    // 读取点云
-//    auto oriCloud = open3d::io::CreatePointCloudFromFile(Path);
-//    auto tarCloud = open3d::io::CreatePointCloudFromFile(modelPath);
-//    if (oriCloud == nullptr || tarCloud == nullptr) {
-//        std::cerr << "Failed to read point cloud  " << std::endl;
-//    }
-//    else {
-//        std::cout << "Successfully read point cloud  " << std::endl;
-//    }
-//    if (oriCloud->points_.size() == 0 || tarCloud->points_.size() == 0) return -1;
-//    std::cout << "imageCloud.size():" << oriCloud->points_.size() << std::endl;
-//    std::cout << "spaceCloud.size():" << tarCloud->points_.size() << std::endl;
-//
-//    regO3d::globalRegistrationWithICP(oriCloud, tarCloud);
-//    return 0;
-//}

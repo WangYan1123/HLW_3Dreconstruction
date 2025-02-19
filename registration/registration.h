@@ -1,72 +1,102 @@
-#pragma once
-
-#include <Eigen/Dense>
-#include <fstream>
+#define _USE_MATH_DEFINES  // 让 MSVC 支持 M_PI
+#include <cmath>
+#include <open3d/Open3D.h>
 #include <iostream>
-#include <memory>
-#include <time.h>
-
-#include "open3d/Open3D.h"
-#include "open3d/pipelines/registration/FastGlobalRegistration.h"
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-
+#include <vector>
 
 using namespace open3d;
-typedef geometry::PointCloud PointCloudT;
+using namespace open3d::geometry;
+using namespace open3d::pipelines::registration;
 
-typedef std::shared_ptr<PointCloudT> PointCloudTPtr;
-typedef pipelines::registration::Feature FeatureT;
-typedef std::shared_ptr<FeatureT> FeatureTPtr;
-typedef pipelines::registration::RegistrationResult regResult;
+double ComputeResolution(const std::shared_ptr<open3d::geometry::PointCloud>& cloud) {
+    if (cloud->points_.empty()) return 0.0;
 
-class regO3d {
-public:
-    pcl::PointCloud<pcl::PointXYZ>::Ptr open3dToPcl(const PointCloudTPtr& o3dCloud);
-    PointCloudTPtr pclToOpen3d(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
-    static float computeCloudR(const PointCloudTPtr& cloud);
-    /**
-    * @brief 预处理，执行降采样，法向量估计，特征描述。
-    *
-    * @param imageCloud in
-    * @param spaceCloud in
-    * @param leaf 栅格大小
-    * @return std::tuple<PointCloudTPtr,PointCloudTPtr,FeatureTPtr,FeatureTPtr> 返回智能指针
-    */
-    static std::tuple<PointCloudTPtr, PointCloudTPtr, FeatureTPtr, FeatureTPtr>
-        preprocessPointCloud(PointCloudTPtr imageCloud, PointCloudTPtr spaceCloud, double& resolution);
+    double total_dist = 0.0;
+    int count = 0;
 
-    /**
-   * @brief 剪枝RANSAC，消除误匹配并完成初始变换
-   *
-   * @param imageCloudDown input
-   * @param spaceCloudDown in
-   * @param imageCloud_fpfh in
-   * @param spaceCloud_fpfh in
-   * @param leaf 栅格大小
-   * @return regResult 初始变换结果
-   */
-    static regResult executeGlobalRegistration(PointCloudTPtr imageCloudDown, PointCloudTPtr spaceCloudDown,
-        FeatureTPtr imageCloud_fpfh, FeatureTPtr spaceCloud_fpfh,
-        double& leaf);
+    open3d::geometry::KDTreeFlann kdtree(*cloud);
+    for (const auto& point : cloud->points_) {
+        std::vector<int> indices;
+        std::vector<double> distances;
+        if (kdtree.SearchKNN(point, 2, indices, distances) > 1) {
+            total_dist += sqrt(distances[1]);
+            count++;
+        }
+    }
+    return (count > 0) ? (total_dist / count) : 0.0;
+}
 
-    /**
-     * @brief 使用ICP优化变换，注：在原始点云上优化
-     *
-     * @param imageCloud in
-     * @param spaceCloud in
-     * @param transInit in
-     * @param leaf 栅格大小
-     * @return regResult final变换结果
-     */
-    static regResult optimizeUsingICP(PointCloudTPtr imageCloud, PointCloudTPtr spaceCloud,
-        const Eigen::Matrix4d& transInit, double& leaf);
-    /**
-     * @brief 点云配准主函数
-     * 
-     * @param transToWorld in 标定得到的相机到世界坐标系，4X4变换矩阵
-     * @param transFinal out 4X4变换矩阵
-     * @return int 状态值，负数是报错
-     */
-    static int regO3d::globalRegistrationWithICP(PointCloudTPtr oricloud, PointCloudTPtr tarcloud);
-};
+void VisualizeRegistration(const open3d::geometry::PointCloud& source,
+    const open3d::geometry::PointCloud& target,
+    const Eigen::Matrix4d& transformation) {
+
+    auto source_transformed = std::make_shared<open3d::geometry::PointCloud>(source);
+    source_transformed->Transform(transformation);
+
+    source_transformed->PaintUniformColor(Eigen::Vector3d(0, 0, 1)); // 蓝色
+    auto target_copy = std::make_shared<open3d::geometry::PointCloud>(target);
+    target_copy->PaintUniformColor(Eigen::Vector3d(1, 0, 0)); // 红色
+
+    open3d::visualization::DrawGeometries({ source_transformed, target_copy }, "Registration Result");
+}
+
+Eigen::Matrix4d ComputeFGRRegistration(const std::shared_ptr<PointCloud>& source_down, const std::shared_ptr<PointCloud>& target_down, float search_radius) {
+    float distance_threshold = search_radius * 1.5;
+    int max_iterations = 64;
+    int max_tuples = 1000;
+
+    std::cout << "compute FPFH description" << std::endl;
+    std::shared_ptr<Feature> source_fpfh, target_fpfh;
+    source_down->EstimateNormals(KDTreeSearchParamHybrid(2 * search_radius, 30));
+    source_fpfh = ComputeFPFHFeature(*source_down, KDTreeSearchParamHybrid(5 * search_radius, 100));
+    target_down->EstimateNormals(KDTreeSearchParamHybrid(2 * search_radius, 30));
+    target_fpfh = ComputeFPFHFeature(*target_down, KDTreeSearchParamHybrid(5 * search_radius, 100));
+
+    std::cout << "FGR registration" << std::endl;
+    RegistrationResult registration_result = FastGlobalRegistrationBasedOnFeatureMatching(
+        *source_down, *target_down, *source_fpfh, *target_fpfh,
+        FastGlobalRegistrationOption(
+            1.4, true, true, distance_threshold, max_iterations, 0.95, max_tuples));
+
+    return registration_result.transformation_;
+}
+
+std::shared_ptr<PointCloud> Ransac_corr(const std::shared_ptr<PointCloud>& cloud_src, const std::shared_ptr<PointCloud>& cloud_tgt) {
+    auto kd_tree = std::make_shared<geometry::KDTreeFlann>(*cloud_tgt);
+    std::vector<std::pair<int, int>> correspondences;
+
+    for (size_t i = 0; i < cloud_src->points_.size(); ++i) {
+        std::vector<int> indices(1);
+        std::vector<double> distances(1);
+        if (kd_tree->SearchKNN(cloud_src->points_[i], 1, indices, distances) > 0) {
+            if (distances[0] < 7.0) {
+                correspondences.emplace_back(i, indices[0]);
+            }
+        }
+    }
+
+    auto result = std::make_shared<PointCloud>();
+    for (const auto& corr : correspondences) {
+        result->points_.push_back(cloud_src->points_[corr.first]);
+    }
+
+    auto cloud_src_colored = std::make_shared<PointCloud>(*cloud_src);
+    cloud_src_colored->PaintUniformColor(Eigen::Vector3d(0, 1, 0));  // 绿色
+    auto cloud_tgt_colored = std::make_shared<PointCloud>(*cloud_tgt);
+    cloud_tgt_colored->PaintUniformColor(Eigen::Vector3d(1, 0, 0));  // 红色
+
+    std::shared_ptr<geometry::LineSet> line_set = std::make_shared<geometry::LineSet>();
+    for (const auto& corr : correspondences) {
+        Eigen::Vector3d src_pt = cloud_src->points_[corr.first];
+        Eigen::Vector3d tgt_pt = cloud_tgt->points_[corr.second];
+        line_set->points_.push_back(src_pt);
+        line_set->points_.push_back(tgt_pt);
+        line_set->lines_.push_back(Eigen::Vector2i(line_set->points_.size() - 2, line_set->points_.size() - 1));
+        line_set->colors_.push_back(Eigen::Vector3d(0, 0, 1));  // 蓝色
+    }
+
+    visualization::DrawGeometries({ cloud_src_colored, cloud_tgt_colored, line_set }, "Point Cloud Correspondences");
+
+    return result;
+}
+
